@@ -32,7 +32,9 @@ html,body{height:100%;overflow:hidden;background:#E9E8E1;color:#2B1B1D;font-fami
 #cover.go #dear,#cover.go #ring{opacity:0}
 
 /* tap hint: soft ring on the seal (no text) */
-#ring{position:absolute;border-radius:50%;border:2px solid rgba(110,20,35,.6);box-shadow:0 0 0 1px rgba(255,255,255,.7),0 0 12px rgba(255,255,255,.7);transform:translate(-50%,-50%);pointer-events:none;animation:ring 2.2s ease-out infinite;transition:opacity .4s;visibility:hidden}
+#ring{position:absolute;z-index:3;border-radius:50%;border:2px solid rgba(110,20,35,.6);box-shadow:0 0 0 1px rgba(255,255,255,.7),0 0 12px rgba(255,255,255,.7);transform:translate(-50%,-50%);pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab;animation:ring 2.2s ease-out infinite;transition:opacity .4s;visibility:hidden}
+#ring.dragging{cursor:grabbing;animation:none}
+#cover.go #ring{animation:none;pointer-events:none}
 @keyframes ring{0%{transform:translate(-50%,-50%) scale(.85);opacity:.9}100%{transform:translate(-50%,-50%) scale(1.35);opacity:0}}
 
 /* ===== screen behind the cover (shown in the first tab after Canva opens in a new tab) ===== */
@@ -70,7 +72,8 @@ html,body{height:100%;overflow:hidden;background:#E9E8E1;color:#2B1B1D;font-fami
 </head>
 <body>
 
-<audio id="music" loop preload="auto"></audio>
+<!-- Browser will attempt autoplay; if blocked, the first user interaction will start the music. -->
+<audio id="music" autoplay loop preload="auto" playsinline></audio>
 
 <!-- Canva website -->
 <iframe id="site" title="Wedding invitation" allow="autoplay; fullscreen; clipboard-write" referrerpolicy="no-referrer-when-downgrade" hidden></iframe>
@@ -99,7 +102,7 @@ html,body{height:100%;overflow:hidden;background:#E9E8E1;color:#2B1B1D;font-fami
 <div id="cover" role="button" tabindex="0" aria-label="Tap to open the invitation">
   <div id="art"><img id="coverImg" alt=""></div>
   <div id="dear"><small id="dearWord">Dear</small><b id="guestName">Guest</b></div>
-  <div id="ring"></div>
+  <div id="ring" role="button" tabindex="0" aria-label="Ketuk untuk membuka undangan, atau geser untuk memindahkan lingkaran"></div>
 </div>
 
 <script>
@@ -134,7 +137,7 @@ const CONFIG = {
   canvaLink: "https://lingkaran-isna-suryaniii.my.canva.site/theme-4-mockup",   // your Canva website link
 
   cover: "cover.jpg",         // your cover image with TRANSPARENT background (PNG or WebP, 1080 x 1920 or similar)
-  music: "music.mp3",          // plays automatically when the cover is tapped
+  music: "music.mp3",          // tries autoplay as soon as the page loads; tap the cover if the browser blocks it
   coverBg: "#FFFFFF",          // background colour, e.g. "#6E1423"
   coverBgImage: "",            // background picture, e.g. "background.jpg" ("" = none)
 
@@ -146,15 +149,16 @@ const CONFIG = {
 
   // --- tap hint: soft ring on the wax seal (no text) ---
   showTapCue: true,
-  sealX: 0.534,                // seal centre on the cover image: 0 = left edge, 1 = right edge
-  sealY: 0.595,                 // seal centre on the cover image: 0 = top edge, 1 = bottom edge
+  sealX: 0.534,                // posisi AWAL ikon ketuk: 0 = kiri, 1 = kanan
+  sealY: 0.595,                // posisi AWAL ikon ketuk: 0 = atas, 1 = bawah
+                                // ikon juga bisa digeser langsung di cover (tersimpan di browser itu)
   sealSize: 0.22,              // ring size (fraction of the image width)
 
   speakerPosition: "top-right",   // top-right | top-left | bottom-right | bottom-left
-  speakerSize: 36,                // px
+  speakerSize: 40,                // px (easy to tap on mobile)
   showOpenButton: true,           // small "open in browser" button under the speaker (backup if the site doesn't show)
 
-  // "newtab"   = Canva opens in a NEW TAB, the music keeps playing in this tab (recommended, works with every Canva link)
+  // "newtab"   = Canva opens in a NEW TAB, the music stays in this original tab (recommended, works with every Canva link)
   // "embed"    = Canva shows inside this page (Canva often blocks this -> blank screen)
   // "redirect" = jumps to the Canva site in the same tab (works, but the music stops)
   mode: "newtab",
@@ -187,18 +191,53 @@ document.title = "Wedding Invitation";
 const guest = (new URLSearchParams(location.search).get("to") || "").trim().slice(0, 60);
 $("guestName").textContent = guest || CONFIG.defaultGuest;           // textContent = safe
 
-/* place "Dear + name" and the tap ring relative to the cover image (follows the image on every screen size) */
+/* Ikon ketuk: dapat digeser dengan mouse/jari, posisinya mengikuti gambar cover.
+   Posisi hasil geser disimpan di browser ini. Untuk posisi default SEMUA tamu,
+   ubah sealX dan sealY pada CONFIG lalu upload HTML yang sudah diedit. */
+const ringStorageKey = "digitalhaus-tap-position:" + location.pathname + ":" + CONFIG.cover;
+const ringPosition = {x: CONFIG.sealX, y: CONFIG.sealY};
+const coverGeometry = {ox: 0, oy: 0, dw: innerWidth, dh: innerHeight};
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+try {
+  const saved = JSON.parse(localStorage.getItem(ringStorageKey));
+  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) &&
+      saved.x >= 0 && saved.x <= 1 && saved.y >= 0 && saved.y <= 1) {
+    ringPosition.x = saved.x;
+    ringPosition.y = saved.y;
+  }
+} catch (error) { /* Browser private mode may disallow storage. */ }
+
+function positionRing(){
+  const {ox, oy, dw, dh} = coverGeometry;
+  const sx = ox + ringPosition.x * dw, sy = oy + ringPosition.y * dh;
+  ring.style.left = sx + "px";
+  ring.style.top = sy + "px";
+  art.style.transformOrigin = sx + "px " + sy + "px";  // zoom into the ring
+}
+function saveRingPosition(){
+  try { localStorage.setItem(ringStorageKey, JSON.stringify(ringPosition)); }
+  catch (error) { /* Still draggable if localStorage is blocked. */ }
+}
+function moveRingAt(cx, cy){
+  const {ox, oy, dw, dh} = coverGeometry;
+  // Keep the circle visible at the edge of the phone screen.
+  const margin = Math.min(24, Math.max(12, innerWidth * 0.04));
+  ringPosition.x = clamp((clamp(cx, margin, innerWidth - margin) - ox) / dw, 0, 1);
+  ringPosition.y = clamp((clamp(cy, margin, innerHeight - margin) - oy) / dh, 0, 1);
+  positionRing();
+}
 function layout(){
   const iw = img.naturalWidth || 1080, ih = img.naturalHeight || 1920;
   const vw = innerWidth, vh = innerHeight;
-  const s = Math.max(vw / iw, vh / ih), dw = iw * s, dh = ih * s;     // same math as object-fit: cover
+  const s = Math.max(vw / iw, vh / ih), dw = iw * s, dh = ih * s; // object-fit: cover
   const ox = (vw - dw) / 2, oy = (vh - dh) / 2;
+  Object.assign(coverGeometry, {ox, oy, dw, dh});
   dear.style.top = (oy + CONFIG.dearY * dh) + "px";
   dear.querySelector("b").style.fontSize = Math.max(30, Math.min(dw * 0.1, 54)) + "px";
   dear.querySelector("small").style.fontSize = Math.max(16, Math.min(dw * 0.042, 22)) + "px";
-  const sx = ox + CONFIG.sealX * dw, sy = oy + CONFIG.sealY * dh;
-  art.style.transformOrigin = sx + "px " + sy + "px";                 // zoom goes into the seal
-  Object.assign(ring.style, {left: sx + "px", top: sy + "px", width: CONFIG.sealSize * dw + "px", height: CONFIG.sealSize * dw + "px"});
+  ring.style.width = CONFIG.sealSize * dw + "px";
+  ring.style.height = CONFIG.sealSize * dw + "px";
+  positionRing();
   dear.style.visibility = "visible";
   ring.style.visibility = CONFIG.showTapCue ? "visible" : "hidden";
 }
@@ -207,7 +246,57 @@ img.addEventListener("error", layout);
 addEventListener("resize", layout);
 if (img.complete) layout();
 
-/* floating buttons */
+/* Clicking/tapping the circle opens the invitation.
+   Dragging it instead moves it, WITHOUT triggering the opening animation. */
+let ringDrag = null;
+ring.addEventListener("pointerdown", (e) => {
+  if (started || !CONFIG.showTapCue || (e.pointerType === "mouse" && e.button !== 0)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  ringDrag = {id: e.pointerId, x: e.clientX, y: e.clientY,
+              centerX: parseFloat(ring.style.left), centerY: parseFloat(ring.style.top), moved: false};
+  try { ring.setPointerCapture(e.pointerId); } catch (error) {}
+});
+ring.addEventListener("pointermove", (e) => {
+  if (!ringDrag || ringDrag.id !== e.pointerId) return;
+  const dx = e.clientX - ringDrag.x, dy = e.clientY - ringDrag.y;
+  if (!ringDrag.moved && Math.hypot(dx, dy) < 7) return;
+  ringDrag.moved = true;
+  ring.classList.add("dragging");
+  moveRingAt(ringDrag.centerX + dx, ringDrag.centerY + dy);
+});
+ring.addEventListener("pointerup", (e) => {
+  if (!ringDrag || ringDrag.id !== e.pointerId) return;
+  const dragged = ringDrag.moved;
+  ringDrag = null;
+  ring.classList.remove("dragging");
+  if (dragged) saveRingPosition();
+  else start();
+});
+ring.addEventListener("pointercancel", () => {
+  if (ringDrag && ringDrag.moved) saveRingPosition();
+  ringDrag = null;
+  ring.classList.remove("dragging");
+});
+ring.addEventListener("click", (e) => {
+  e.stopPropagation();  // Do not accidentally open the invitation after dragging.
+  e.preventDefault();
+});
+ring.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.stopPropagation(); e.preventDefault(); start(); return;
+  }
+  const arrows = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]};
+  if (arrows[e.key]) {
+    e.preventDefault(); e.stopPropagation();
+    const [dx, dy] = arrows[e.key];
+    moveRingAt(parseFloat(ring.style.left) + dx * 8, parseFloat(ring.style.top) + dy * 8);
+    saveRingPosition();
+  }
+});
+
+/* Floating speaker is visible immediately, including on the unopened cover. */
+fab.classList.add("show");
 fab.dataset.pos = CONFIG.speakerPosition;
 fab.style.setProperty("--fab", CONFIG.speakerSize + "px");
 if (CONFIG.showOpenButton && CONFIG.mode === "embed") fab.classList.add("hasopen");
@@ -218,27 +307,52 @@ const canvaUrl = fixUrl(CONFIG.canvaLink);
 const canvaReady = !!canvaUrl;                           // false only if canvaLink is empty
 $("openBtn").href = canvaUrl || "#";
 
-/* music + speaker */
-let playing = false;
-function render(){ spk.classList.toggle("on", playing); spk.setAttribute("aria-pressed", playing); }
-function playMusic(){
-  const p = music.play();
-  if (p && p.then) p.then(() => { playing = true; render(); }).catch(() => { playing = false; render(); });
-  else { playing = true; render(); }
+/* Music starts as early as the browser allows, with the button working on the cover.
+   Modern mobile browsers may block audible autoplay until a real user interaction. */
+let userPausedMusic = false;
+function renderMusic(){
+  const playing = !music.paused && !music.ended;
+  spk.classList.toggle("on", playing);
+  spk.setAttribute("aria-pressed", String(playing));
+  spk.setAttribute("aria-label", playing ? "Pause background music" : "Play background music");
+  spk.title = playing ? "Pause music" : "Play music";
 }
-spk.addEventListener("click", () => { if (playing){ music.pause(); playing = false; render(); } else playMusic(); });
+function playMusic(){
+  if (!CONFIG.music || !music.paused) return;
+  try {
+    const attempt = music.play();
+    if (attempt && typeof attempt.catch === "function") {
+      attempt.catch(() => { renderMusic(); }); // autoplay blocked or audio file missing
+    }
+  } catch (error) { renderMusic(); }
+}
+music.addEventListener("play", renderMusic);
+music.addEventListener("pause", renderMusic);
+music.addEventListener("ended", renderMusic);
+spk.addEventListener("click", (event) => {
+  event.stopPropagation(); // tapping the speaker must not open the invitation
+  if (!music.paused){
+    userPausedMusic = true;
+    music.pause();
+  } else {
+    userPausedMusic = false;
+    playMusic();
+  }
+  renderMusic();
+});
+renderMusic();
+playMusic(); // try immediately on page load (no user tap required where permitted)
 
 /* ===== ONE TAP: zoom into the seal -> Canva site ===== */
 let started = false;
 function start(){
   if (started) return; started = true;
-  playMusic();                                            // the tap lets the browser play sound
+  if (!userPausedMusic) playMusic();                       // fallback for browsers blocking autoplay
   if (CONFIG.mode === "embed" && canvaReady){ site.hidden = false; site.src = canvaUrl; }
 
   if (CONFIG.mode === "newtab" && canvaReady){
     cover.classList.add("go");                           // zoom starts right away
     $("goBtn").href = canvaUrl; $("goBtn").textContent = CONFIG.openText;
-    setTimeout(() => fab.classList.add("show"), reduce ? 0 : 900);
     const doOpen = () => {
       const w = window.open(canvaUrl, "_blank");         // new tab; music keeps playing in this tab
       $("afterText").textContent = w ? CONFIG.afterText : "";   // if the browser blocked it, the button below opens it
@@ -253,7 +367,6 @@ function start(){
     return;
   }
   cover.classList.add("go");                              // cover zooms in and fades out, the site is right behind it
-  setTimeout(() => fab.classList.add("show"), reduce ? 0 : 900);
   setTimeout(() => {
     cover.style.display = "none";
     if (!canvaReady) document.body.insertAdjacentHTML("beforeend",
